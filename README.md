@@ -12,7 +12,7 @@ Keywords: Danaus plexippus; Ophryocystis elektroscirrha; extreme heat; temperatu
 
 Abstract: We used a constant temperature experiment to explore how temperature influences components of host and parasite performance in monarch butterflies (Danaus plexippus) and their protozoan parasite OE (Ophryocystis elektroscirrha). Using five constant temperature treatments spanning 18-34°C, we measured monarch development, survival, size, immune function, and OE infection status and intensity. Below, datasheet columns are defined.
 
-# Metadata for 2019 Temperature-Infection experiment
+### Metadata for 2019 Temperature-Infection experiment
 
 File: mtemp_comp_Nov1_2021.csv (comprehensive data for majority of analysis)
 "ID" = uniquie monarch identification number (1-450)               
