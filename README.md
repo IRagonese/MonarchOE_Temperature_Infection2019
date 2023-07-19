@@ -57,7 +57,7 @@ File: mtemp_comp_Nov1_2021.csv (comprehensive data for majority of analysis)
 "Length" = Wing length in mm
 "Breadth" = Wing width in mm
 "AspectRatio" = Wing length / breadth (measure of wing elongation - migratory wings typically more elongated)
-"FinalAbsorbance" = Phenoloxidase assay absorbance value at the final timestep
+"FinalAbsorbance" = Phenoloxidase assay absorbance value at the final timestep (from BioTek microplate reader software)
 
 File: Hemocyte_counts_June5.csv (hemocyte counts and concentration)
 See comprehensive datasheet, includes raw count values for hemocytometer chambers plus counts of immune cell types
