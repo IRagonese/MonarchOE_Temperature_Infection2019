@@ -1,0 +1,833 @@
+---
+title: "GAM_temp2019_Jul24_2023"
+author: "Isabella Ragonese"
+date: '2023-07-25'
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r load libraries, include=FALSE}
+library(tidyverse) 
+library(ggplot2) 
+library(lme4)
+library(visreg)
+library(plyr)
+library(mgcv)
+#library(tidymv)
+#library(voxel)
+library(MASS)
+#library(mgcViz)
+library(itsadug)
+library(sjPlot)
+```
+
+#Bolker 
+https://bbolker.github.io/mixedmodels-misc/glmmFAQ#overdispersion
+#overdispersion function
+```{r}
+overdisp_fun <- function(model) {
+    rdf <- df.residual(model)
+    rp <- residuals(model,type="pearson")
+    Pearson.chisq <- sum(rp^2)
+    prat <- Pearson.chisq/rdf
+    pval <- pchisq(Pearson.chisq, df=rdf, lower.tail=FALSE)
+    c(chisq=Pearson.chisq,ratio=prat,rdf=rdf,p=pval)
+}
+```
+
+#other sources: 
+https://noamross.github.io/gams-in-r-course/
+https://jacolienvanrij.com/Tutorials/GAMM.html
+
+#read in data and create subsets
+```{r, read in data and create subsets for control monarchs, pupal and larval immune measures, include=FALSE}
+mtemp.comp<-read.csv("data/mtemp_comp_Nov1_2021.csv") #master data
+
+mtemp.comp$Spore_load2<-ifelse(mtemp.comp$Infection_status != 0, mtemp.comp$Spore_load, 0) #add column that includes 0 spore load for adults that emerged without parasites
+mtemp.comp$inoc_status<-ifelse(mtemp.comp$OE_strain != "control", 1, 0) #add column that represents whether monarch was inoculated with either strain of OE
+
+#create factor variables for GAM
+mtemp.comp$Lin_f<-as.factor(mtemp.comp$Lineage)
+mtemp.comp$Sex_f<-as.factor(mtemp.comp$Sex)
+mtemp.comp$inoc_f<-as.factor(mtemp.comp$inoc_status)
+mtemp.comp$infection_f<-as.factor(mtemp.comp$Infection_status)
+mtemp.comp$OE_f<-as.factor(mtemp.comp$OE_strain)
+
+mtemp.comp$Wing_deformity_bin<-if_else(mtemp.comp$Wing_deformity==0|mtemp.comp$Wing_deformity==1,0,1) #make binary deformed/not deformed instead on the 0-4 scale
+
+#comprehensive dataframe with just the infected individuals
+mtemp.inf <- subset(mtemp.comp, Infection_status==1)
+#comprehensive dataframe with just the inoculated individuals
+mtemp.inoc <- subset(mtemp.comp, inoc_status==1)
+#comprehensive dataframe with just control individuals
+mtemp.control <- subset(mtemp.comp, OE_strain=="control", Infection_status!=1) 
+
+#subset comprehensive dataframe to create dataframes with either larval or pupal bled individuals
+pupahemo.df = filter(mtemp.comp, Bleed_stage.x=="Pupa")
+#Add log10 Hemo for ID#70 - as if 1 cell found
+pupahemo.df[28,30]=1.130334
+
+larvahemo.df = filter(mtemp.comp, Bleed_stage.x=="Larva")
+
+#take out rows with NA for loghemo, or final absorbance (some individuals didn't have enough hemolymph for both analyses) in larvahemo, pupalhemo, and po datasets
+completeFun <- function(data, desiredCols) {
+  completeVec <- complete.cases(data[, desiredCols])
+  return(data[completeVec, ])
+}
+
+larvahemo.df<-completeFun(larvahemo.df, "LogHemo")
+larvahemo.df = filter(larvahemo.df, !is.na(Mass))
+pupahemo.df<-completeFun(pupahemo.df, "LogHemo")
+pupahemo.df = filter(pupahemo.df, !is.na(Mass))
+
+mtemp.po<-completeFun(mtemp.comp, "FinalAbsorbance")
+mtemp.adult<-filter(mtemp.comp, Surv_adult==1)
+control.adult<-completeFun(mtemp.control, "Dev_adult")
+
+#merozoites data #n=46
+merozoite_df<-read.csv("data/Merozoites_7_21.csv")
+merozoite_df2<-left_join(merozoite_df, mtemp.inf, by="ID")
+merozoite_df2$Temp<-as.character(merozoite_df2$Temp)
+merozoite_df3<-merozoite_df2[!is.na(merozoite_df2$Temp),]
+```
+
+############################
+#preliminary visualizations and analyses to asses how bleed treatment affects response variables
+## Which response variables were impacted by bleed treatment?
+```{r, bleeding effects, echo=FALSE}
+Bleed_stage <- mtemp.comp$Bleed_stage.x
+response<-mtemp.comp$Wing_deformity_bin
+Mod_Bleed<-lm(response ~ Bleed_stage, data = mtemp.comp)
+summary(Mod_Bleed)
+visreg(Mod_Bleed, ylab="wing deformity")
+
+response<-mtemp.comp$Dev_pupa
+Mod_Bleed<-glm(response ~ Bleed_stage, data = mtemp.comp, family=poisson)
+summary(Mod_Bleed)
+visreg(Mod_Bleed, ylab="Time to pupation")
+
+response<-mtemp.comp$Dev_adult
+Mod_Bleed<-glm(response ~ Bleed_stage, data = mtemp.comp, family=poisson)
+summary(Mod_Bleed)
+visreg(Mod_Bleed, ylab="time to eclosion")
+
+response<-mtemp.comp$Surv_pupa
+Mod_Bleed<-glm(response ~ Bleed_stage, data = mtemp.comp, family=binomial)
+summary(Mod_Bleed)
+visreg(Mod_Bleed, ylab="survival to pupaption")
+
+response<-mtemp.comp$Surv_adult
+Mod_Bleed<-glm(response ~ Bleed_stage, data = mtemp.comp, family = binomial)
+summary(Mod_Bleed)
+visreg(Mod_Bleed, ylab="survival to eclosion")
+
+response<-mtemp.comp$Area
+Mod_Bleed<-lm(response ~ Bleed_stage, data = mtemp.comp)
+summary(Mod_Bleed)
+visreg(Mod_Bleed, ylab="wing area")
+
+response<-mtemp.comp$Adult_longevity
+Mod_Bleed<-glm(response ~ Bleed_stage, data = mtemp.comp, family = poisson)
+summary(Mod_Bleed)
+visreg(Mod_Bleed, ylab="adult longevity")
+
+response<-mtemp.comp$Infection_status
+Mod_Bleed<-glm(response ~ Bleed_stage, data = mtemp.comp, family = binomial)
+summary(Mod_Bleed)
+visreg(Mod_Bleed, ylab="infection (y/n)")
+
+response<-mtemp.comp$logSpore_load
+Mod_Bleed<-lm(response ~ Bleed_stage, data = mtemp.comp)
+summary(Mod_Bleed)
+visreg(Mod_Bleed, ylab="log spore load")
+```
+
+################################
+#control monarchs
+##Development time
+```{r}
+response<-log10(control.adult$Dev_adult)
+
+m1_mixed<-gam(response ~ s(Temp, k=5) + Sex_f + s(Lin_f,Temp, bs="re"), data=control.adult, method = "REML") #mixed with lineage as random slope; Using factor versions of predictor variables
+
+gam.check(m1_mixed)
+
+summary(m1_mixed)
+anova.gam(m1_mixed)
+
+#basic plot
+plot(m1_mixed, residuals = TRUE, pch =1, cex=0.8, shade=TRUE, shift = coef(m1_mixed)[1], seWithMean = TRUE)
+
+
+#add itsadug points- need to put all lines into the console
+plot.new()
+plot_smooth(m1_mixed, view = "Temp", rm.ranef = TRUE, col="darkgoldenrod3", lwd=2, rug = TRUE, ylab=("Development time (log10(days))"), xlab=("Temperature (°C)"), hide.label = TRUE)
+plot_data(m1_mixed, view = "Temp", input="data", rm.ranef = TRUE, add = TRUE, alpha=0.7, col="darkgray", hide.label = TRUE)
+axis(1, at=c(15,35), labels=FALSE, lwd.ticks=0)
+#axis(1, at=seq(18 , 34, by=4), lwd=0, lwd.ticks=1)
+
+
+```
+
+##Survival
+binary response variable = Survival to adult (could do same for pupa)  
+  explanatory variables = Temperature
+  random = Lineage
+  distribution = binomial
+```{r}
+control.surv<-completeFun(mtemp.control, "Surv_adult")
+response<-control.surv$Surv_adult
+
+m1_mixed<-gam(response ~ s(Temp, k=5) + s(Lin_f, Temp, bs="re"), data=control.surv, method = "REML", family=binomial) #lineage as random slope; s(Lin_f, bs="re") would be random intercept
+
+summary(m1_mixed)
+gam.check(m1_mixed)
+anova.gam(m1_mixed)
+
+##################################
+plot(m1_mixed, shade=TRUE, trans = plogis, shift = coef(m1_mixed)[1], seWithMean = TRUE)
+
+#add itsadug points- need to put all lines into the console
+plot.new()
+plot_smooth(m1_mixed, view = "Temp", rm.ranef = TRUE, transform = plogis, col="darkgoldenrod3", lwd=2, rug = TRUE, ylab=("Survival Probability"), xlab=("Temperature (°C)"), hide.label = TRUE)
+axis(1, at=c(15,35), labels=FALSE, lwd.ticks=0)
+
+```
+
+##Monarch Size
+Continuous response variable = Area (n=92) OR Mass (pupa n=104 and larva n=116)
+  explanatory variables = Temperature, (sex and bleed stage for Area)
+  random = Lineage
+  distribution = gaussian  
+```{r}
+control.adult2<-filter(control.adult, !is.na(Area))
+Bleed_stage_f<-as.factor(control.adult2$Bleed_stage.x)
+response<-control.adult2$Area
+
+m1_mixed<-gam(response ~ s(Temp, k=5) + Sex_f + Bleed_stage_f + s(Lin_f, Temp, bs="re"), data=control.adult2, method = "REML") #lineage as random effect
+
+summary(m1_mixed)
+gam.check(m1_mixed)
+anova.gam(m1_mixed)
+
+
+plot(m1_mixed, shade=TRUE, shift = coef(m1_mixed)[1], seWithMean = TRUE)
+
+#add itsadug points- need to put all lines into the console
+plot.new()
+plot_smooth(m1_mixed, view = "Temp", rm.ranef = TRUE, col="darkgoldenrod3", lwd=2, rug = TRUE, ylab=bquote("Wing Area " (mm^2)), xlab=("Temperature (°C)"), hide.label = TRUE)
+plot_data(m1_mixed, view = "Temp", input="data", rm.ranef = TRUE, add = TRUE, alpha=0.7, col="darkgray", hide.label = TRUE)
+axis(1, at=c(15,35), labels=FALSE, lwd.ticks=0)
+par(mar = c(0, 0, 0, 0))
+
+#table of monarchs per temp
+tab1<-control.adult2 %>% group_by(Temp) %>% dplyr::summarise(total_wings=n())
+#could run with the whole dataset and color points by infection status
+
+```
+
+##Adult longevity
+```{r}
+#response<-log10(control.adult$Adult_longevity)#log it to use gaussian distribution - gam check suggests poor fit
+response<-(control.adult$Adult_longevity) #Neg binomial seems to work best looking at gam check
+
+m1_mixed<-gam(response ~ s(Temp, k=5) + Sex_f + s(Lin_f, Temp, bs="re"), data=control.adult, method = "REML", family = 'nb', link='log') #mixed with lineage as random effect
+
+overdisp_fun(m1_mixed) #poisson was overdispersed, looks ok with neg-bin
+summary(m1_mixed)
+gam.check(m1_mixed)
+
+#plot(m1_mixed)
+plot(m1_mixed, residuals = TRUE, pch =1, cex=0.8, shade=TRUE, shift = coef(m1_mixed)[1], seWithMean = TRUE)
+
+#add itsadug points- need to put all lines into the console
+#with negative binomial model - use transform = exp to graph data without the log link
+plot.new()
+plot_smooth(m1_mixed, view = "Temp", transform=exp, rm.ranef = TRUE, col="darkgoldenrod3", lwd=2, rug = TRUE, ylab=("Adult longevity (days)"), xlab=("Temperature (°C)"), hide.label = TRUE)
+plot_data(m1_mixed, view = "Temp", input="data", rm.ranef = TRUE, add = TRUE, alpha=0.7, col="darkgray", hide.label = TRUE)
+axis(1, at=c(15,35), labels=FALSE, lwd.ticks=0)
+
+```
+
+##Wing deformity
+# Control
+```{r}
+control.adult3<-filter(control.adult, !is.na(Wing_deformity))
+control.adult3$Bleed_stage_f<-as.factor(control.adult3$Bleed_stage.x)
+response<-as.factor(control.adult3$Wing_deformity_bin)
+
+
+m1_mixed<-gam(response ~ s(Temp, k=5) + Sex_f + s(Lin_f, Temp, bs="re"), data=control.adult3, method = "REML", family=binomial) #lineage as random effect
+
+
+summary(m1_mixed) 
+gam.check(m1_mixed)
+
+deformitytable<-control.adult3 %>% 
+  group_by(Temp) %>% 
+  dplyr::summarise(prop_deform = sum(as.numeric(Wing_deformity_bin), na.rm=T)/n(),
+            seprop_deform = sqrt(prop_deform*(1-prop_deform)/n()),
+            n = n())
+
+
+#add itsadug - need to put all lines into the console
+plot.new()
+plot_smooth(m1_mixed, view = "Temp", rm.ranef = TRUE, transform = plogis, col="darkgoldenrod3", lwd=2, rug = TRUE, ylab=("Probability of Wing Deformity"), xlab=("Temperature (°C)"), hide.label = TRUE)
+axis(1, at=c(15,35), labels=FALSE, lwd.ticks=0)
+
+#* Sex_f : factor; set to the value(s): F
+
+```
+
+###Infection outcomes
+
+##infection success
+response variable (binary) = yes/no infection 
+  explanatory variables = Temperature, sex, OE strain? size? 
+  random= Lineage
+  distribution = binomial 
+```{r}
+mtemp.inoc1 = mtemp.inoc %>% filter(!is.na(Sex))
+response<-mtemp.inoc1$Infection_status
+
+m1_mixed<-gam(response ~ s(Temp, k=5) + Sex_f + OE_f + s(Lin_f, Temp, bs="re"), data=mtemp.inoc1, method = "REML", family=binomial) #lineage as random effect
+
+summary(m1_mixed)
+gam.check(m1_mixed)
+
+plot(m1_mixed, shade=TRUE, trans = plogis, shift = coef(m1_mixed)[1], seWithMean = TRUE)
+
+#add itsadug points- need to put all lines into the console
+plot.new()
+plot_smooth(m1_mixed, view = "Temp", rm.ranef = TRUE, transform = plogis, col="skyblue2", lwd=2, rug = FALSE, ylab=("Infection probability"), xlab=("Temperature (°C)"), hide.label = TRUE)
+axis(1, at=c(15,35), labels=FALSE, lwd.ticks=0)
+
+infection_table<-mtemp.inoc1 %>% 
+  group_by(Temp) %>% 
+  dplyr::summarise(prop_inf = sum(as.numeric(Infection_status), na.rm=T)/n(),
+            seprop_inf = sqrt(prop_inf*(1-prop_inf)/n()),
+            n = n())
+##error bar plot
+x<-infection_table$Temp
+y<-infection_table$prop_inf
+se<-infection_table$seprop_inf
+
+plot.new()
+plot_smooth(m1_mixed, view = "Temp", rm.ranef = TRUE, transform = plogis, col="skyblue2", lwd=2, rug = FALSE, ylab=("Infection probability"), xlab=("Temperature (°C)"), hide.label = TRUE)
+axis(1, at=c(15,35), labels=FALSE, lwd.ticks=0)
+arrows(x, y-se, x, y+se, length=0.05, angle=90, code=3)
+points(x, y,
+    ylim=c(0.0,1),
+    pch=19, xlab="Temperature (°C)", ylab="Infection probability")
+
+# * Sex_f : factor; set to the value(s): F. 
+# 	* OE_f : factor; set to the value(s): E3.
+
+
+```
+
+##Spore load 18-30
+response variable = log10 spore load
+  explanatory variables = Temperature, sex, 
+                (size? (will exclude deformed ones if I use area))
+  random= Lineage
+  distribution = gaussian
+```{r}
+mtemp.inf2<-dplyr::filter(mtemp.inf, !is.na(Sex_f)) #18-30C monarchs - infected only
+response<-log10(mtemp.inf2$Spore_load2)
+
+m1_mixed<-gam(response ~ s(Temp, k=4) + Sex_f + OE_f + s(Lin_f,Temp, bs="re"), data=mtemp.inf2, method = "REML") #lineage as random effect
+
+summary(m1_mixed)
+gam.check(m1_mixed)
+anova.gam(m1_mixed)
+
+plot(m1_mixed, shade=TRUE, shift = coef(m1_mixed)[1], seWithMean = TRUE)
+
+plot.new()
+plot_smooth(m1_mixed, view = "Temp", rm.ranef = TRUE, col="skyblue2", lwd=2, rug = FALSE, ylab=("Infection intensity (log10(parasites/monarch))"), xlab=("Temperature (°C)"), hide.label = TRUE)
+plot_data(m1_mixed, view = "Temp", input="data", rm.ranef = TRUE, add = TRUE, alpha=0.7, col="darkgray", hide.label = TRUE)
+axis(1, at=c(15,35), labels=FALSE, lwd.ticks=0)
+
+##BOTH OE strains
+plot.new()
+plot_smooth(m1_mixed, view = "Temp", cond = list("Lin_f"="D", "Sex_f"="F"), plot_all = "OE_f", rm.ranef = TRUE, col=c("#004D40", "#FFC107"), lwd=2, rug = FALSE, ylim = c(4.5,7), ylab=("Infection intensity (log10(parasites/monarch))"), xlab=("Temperature (°C)"), hide.label = TRUE)
+plot_data(m1_mixed, view = "Temp", input="data", rm.ranef = TRUE, add = TRUE, alpha=0.7, col="darkgray", hide.label = TRUE)
+plot_data(m1_mixed, view = "Temp", split_by ="OE_f", input="data", rm.ranef = TRUE, add = TRUE, alpha=0.7, col=c("#004D40", "#FFC107"), ylim=c(650,980), hide.label = TRUE)
+axis(1, at=c(15,35), labels=FALSE, lwd.ticks=0)
+
+```
+##Merozoite concentration - included in supplemental due to small sample size
+All from temps 18-30C
+  response variable = log10 merozoite concentration
+  explanatory variables = Temperature, OE_strain, Mass
+  random= Lineage
+  distribution = gaussian (zero inflated? Instead, included only 46 samples that were bled at appropriate time)
+```{r}
+merozoite_df4<-filter(merozoite_df3, !is.na(Mass))
+merozoite_df4$Temp<-as.integer(merozoite_df4$Temp)
+
+response<-merozoite_df4$LogOE
+
+m1_mixed<-gam(response ~ s(Temp, k=4) + OE_f + s(Mass) +
+                s(Lin_f, Temp, bs="re"), 
+              data=merozoite_df4, method = "REML") #lineage as random effect
+
+summary(m1_mixed) #Slight decrease in merozoite concentration at 30C
+gam.check(m1_mixed)
+
+tab_model(m1_mixed)
+
+#add itsadug points- need to put all lines into the console
+plot.new()
+plot_smooth(m1_mixed, view = "Temp", rm.ranef = TRUE, col="skyblue2", lwd=2, rug = TRUE, ylab=bquote("Merozoite concentration "(log[10](cells/ul))), xlab=("Temperature (°C)"), hide.label = TRUE)
+plot_data(m1_mixed, view = "Temp", input="data", rm.ranef = TRUE, add = TRUE, alpha=0.7, col="black", hide.label = TRUE)
+axis(1, at=c(15,35), labels=c("",""), lwd.ticks=0)
+
+#* OE_f : factor; set to the value(s): E3. 
+# * Mass : numeric predictor; set to the value(s): 1.3066
+```
+
+#Immune measures
+
+##Hemocyte concentration - larvae
+response variable (continuous) = Log(Larval Hemocytes)  
+  explanatory variables = Temperature, OE(y/n), Temp-OE interaction, size, lineage
+  distribution = gaussian
+```{r}
+response<-larvahemo.df$LogHemo
+
+m1_mixed<-gam(response ~ s(Temp,k=5) + inoc_f + s(Mass) + s(Lin_f, Temp, bs="re"), data=larvahemo.df, method = "REML")
+
+summary(m1_mixed) #Temperature*inoculation interaction not sig, neither is temperature #spline for mass is highly significant - increasing mass = increasing hemocytes up to a point
+gam.check(m1_mixed)
+
+plot(m1_mixed, shade=TRUE, shift = coef(m1_mixed)[1], seWithMean = TRUE)
+
+#add itsadug points- need to put all lines into the console
+plot.new()
+plot_data(m1_mixed, view = "Temp", input="data", rm.ranef = TRUE, alpha=0.7, col="darkgray", ylab=("Larval hemocycte conc.(log10(cells/ul))"), xlab=("Temperature (°C)"), hide.label = TRUE)
+plot_smooth(m1_mixed, view = "Temp", add = TRUE, rm.ranef = TRUE, col="#009E73", lwd=2, rug = TRUE, hide.label = TRUE)
+axis(1, at=c(15,35), labels=c("",""), lwd.ticks=0)
+
+tempjitter<-jitter(larvahemo.df$Temp,0.5)
+plot.new()
+plot(x=tempjitter, y=larvahemo.df$LogHemo, col="black", pch=ifelse(larvahemo.df$inoc_f==1, 16,1), cex=0.65, ylab=("Larval hemocycte conc.(log10(cells/ul))"), xlab=("Temperature (°C)"))
+plot_smooth(m1_mixed, view = "Temp", add = TRUE, rm.ranef = TRUE, col="#009E73", lwd=2, rug = TRUE, ylab=("Larval hemocycte conc.(log10(cells/ul))"), xlab=("Temperature (°C)"), hide.label = TRUE)
+axis(1, at=c(15,35), labels=c("",""), lwd.ticks=0)
+
+# * inoc_f : factor; set to the value(s): 1. 
+# 	* Temp : numeric predictor; with 30 values ranging from 18.000000 to 34.000000. 
+# 	* Mass : numeric predictor; set to the value(s): 1.3395. 
+
+#Mass
+plot.new()
+plot_data(m1_mixed, view = "Mass", input="data", rm.ranef = TRUE, alpha=0.7, col="darkgray", ylab=("Larval hemocycte conc.(log10(cells/ul))"), xlab=("Mass (g)"), hide.label = TRUE)
+plot_smooth(m1_mixed, view = "Mass", add = TRUE, rm.ranef = TRUE, col="#009E73", lwd=2, rug = TRUE, hide.label = TRUE)
+axis(1, at=c(0,2.0), labels=c("",""), lwd.ticks=0)
+
+
+```
+
+##Hemocyte conc - pupae
+response variable (continuous) = Log(pupal Hemocytes)  
+  explanatory variables = Temperature, OE(y/n), Temp-OE interaction, size, lineage
+  distribution = gaussian
+```{r}
+response<-pupahemo.df$LogHemo
+#response<-pupahemo.df$Hemo_ul #gam.check better with hemo_ul not transformed?
+
+m1_mixed<-gam(response ~ s(Temp, k=5) + inoc_f + s(Mass) + s(Lin_f, Temp, bs="re"), data=pupahemo.df, method = "REML")
+
+summary(m1_mixed) #Temperature smooth significant - decreasing pupal hemocytes with increasing temperature in all pupae (control and inoculated - interaction not sig). Mass not important at this life stage
+gam.check(m1_mixed)
+
+
+plot(m1_mixed, shade=TRUE, shift = coef(m1_mixed)[1], seWithMean = TRUE)
+
+tempjitter<-jitter(pupahemo.df$Temp,0.5)
+
+#add itsadug points- need to put all lines into the console
+plot.new()
+plot(x=tempjitter, y=pupahemo.df$LogHemo, col="black", pch=ifelse(pupahemo.df$inoc_f==1, 16,1), cex=0.65, ylab=("Pupal hemocycte conc.(log10(cells/ul))"), xlab=("Temperature (°C)"))
+plot_smooth(m1_mixed, view = "Temp", add = TRUE, rm.ranef = TRUE, col="#009E73", lwd=2, rug = TRUE, ylab=("Pupal hemocycte conc.(log10(cells/ul))"), xlab=("Temperature (°C)"), hide.label = TRUE)
+axis(1, at=c(15,35), labels=c("",""), lwd.ticks=0)
+
+# * inoc_f : factor; set to the value(s): 1. 
+# 	* Mass : numeric predictor; set to the value(s): 1.3433. 
+
+plot.new()
+plot_data(m1_mixed, view = "Temp", split_by = "inoc_f", input="data", alpha=0.9, col="darkgray",main="", ylab=("Pupal hemocycte conc.(log10(cells/ul))"), xlab=("Temperature (°C)"), hide.label = TRUE)
+plot_smooth(m1_mixed, view = "Temp", add = TRUE, rm.ranef = TRUE, col="#009E73", lwd=2, rug = TRUE, hide.label = TRUE)
+axis(1, at=c(15,35), labels=c("",""), lwd.ticks=0)
+```
+
+##Larval PO activity 
+response variable (continuous) = Final (max) Absorbance of PO assay 
+  explanatory variables = Temperature, OE(y/n), Temp-OE interaction, Mass, Lineage  
+  distribution = gaussian 
+```{r}
+response<-larvahemo.df$FinalAbsorbance
+
+m1_mixed<-gam(response ~ s(Temp, k=5) + inoc_f + s(Mass) + s(Lin_f, Temp, bs="re"), data=larvahemo.df, method = "REML")
+
+summary(m1_mixed) #Just the smooth term for mass is significant - increase mass= increased absorbance
+gam.check(m1_mixed)
+
+
+#add itsadug points- need to put all lines into the console
+plot.new()
+plot_data(m1_mixed, view = "Temp", input="data", rm.ranef = TRUE, alpha=0.7, col="darkgray", ylab=("Larval PO activity (absorbance)"), xlab=("Temperature (°C)"), hide.label = TRUE)
+plot_smooth(m1_mixed, view = "Temp", add = TRUE, rm.ranef = TRUE, col="#009E73", lwd=2, rug = TRUE, hide.label = TRUE)
+axis(1, at=c(15,35), labels=c("",""), lwd.ticks=0)
+
+#mass
+plot.new()
+plot_data(m1_mixed, view = "Mass", input="data", rm.ranef = TRUE, alpha=0.7, col="darkgray", ylab=("Larval PO activity (absorbance)"), xlab=("Mass (g)"), hide.label = TRUE)
+plot_smooth(m1_mixed, view = "Mass", add = TRUE, rm.ranef = TRUE, col="#009E73", lwd=2, rug = TRUE, hide.label = TRUE)
+axis(1, at=c(0,2.0), labels=c("",""), lwd.ticks=0)
+
+```
+
+##pupal PO activity 
+response variable (continuous) = Final (max) Absorbance of PO assay 
+  explanatory variables = Temperature, OE(y/n), Temp-OE interaction, Mass, Lineage  
+  distribution = gaussian 
+```{r}
+response<-pupahemo.df$FinalAbsorbance
+
+m1_mixed<-gam(response ~ inoc_f + s(Temp, k=5) + s(Mass) + s(Lin_f, Temp, bs="re"), data=pupahemo.df, method = "REML")
+
+
+summary(m1_mixed) #Temp smooth for both inoc statuses is important - general decline in PO with increasing temperature, perhaps slightly elevated again for control pupae at 34C. Inoc status not significant. Lineage smooth term is.
+gam.check(m1_mixed)
+
+#add itsadug points- need to put all lines into the console
+plot.new()
+plot(pupahemo.df$Temp, pupahemo.df$FinalAbsorbance, cex=0.5, col="darkgray", pch=16, ylab=("Pupal PO activity (absorbance)"), xlab=("Temperature (°C)"), bty="n")
+plot_smooth(m1_mixed, view = "Temp", add= TRUE, rm.ranef = TRUE, col="#009E73", lwd=2, rug = TRUE, hide.label = TRUE)
+axis(1, at=c(15,35), labels=c("",""), lwd.ticks=0)
+
+tempjitter<-jitter(pupahemo.df$Temp,0.5)
+plot.new()
+plot(x=tempjitter, y=pupahemo.df$FinalAbsorbance, col="black", pch=ifelse(pupahemo.df$inoc_f==1, 16,1), cex=0.65, ylab=("Pupal PO activity (absorbance)"), xlab=("Temperature (°C)"))
+plot_smooth(m1_mixed, view = "Temp", add = TRUE, rm.ranef = TRUE, col="#009E73", lwd=2, rug = TRUE, ylab=("Pupal PO activity (absorbance)"), xlab=("Temperature (°C)"), hide.label = TRUE)
+axis(1, at=c(15,35), labels=c("",""), lwd.ticks=0)
+
+# inoc_f : factor; set to the value(s): 1. 
+# 	* Temp : numeric predictor; with 30 values ranging from 18.000000 to 34.000000. 
+# 	* Mass : numeric predictor; set to the value(s): 1.3433. 
+
+```
+
+#Costs of infection
+#use full dataset in GAMs for longevity, development, survival prob, wing area, prob deformity
+
+# wing deformity with full dataset - monarch fitness with infection as a covariate (cost of infection) and different smooths for control vs. infected
+```{r}
+mtemp.adult1<-filter(mtemp.adult, !is.na(Wing_deformity))
+mtemp.adult1$Bleed_stage_f<-as.factor(mtemp.adult1$Bleed_stage.x)
+mtemp.adult1<-filter(mtemp.adult1, !is.na(Sex_f))
+mtemp.adult1$infection_f<-as.factor(mtemp.adult1$Infection_status)
+#make infection status an ordered factor to tell difference between intercept adjustment and dif trend over temp for control vs. infected
+mtemp.adult1$infection_OF<-as.ordered(mtemp.adult1$infection_f)
+# change contrast to treatment coding (difference curves)
+contrasts(mtemp.adult1$infection_OF) <- 'contr.treatment'
+# Inspect contrasts:
+contrasts(mtemp.adult1$infection_OF)
+
+#infection status
+response<-as.factor(mtemp.adult1$Wing_deformity_bin)
+
+m3_mixed<-gam(response ~ s(Temp,k=5) + s(Temp, k=5, by=infection_OF) + Sex_f + infection_OF +s(Lin_f, Temp, bs="re"),  data=mtemp.adult1, method = "REML", family=binomial)
+ 
+summary(m3_mixed)
+gam.check(m3_mixed)
+
+#spore load
+mtemp.adult2<-filter(mtemp.adult1, !is.na(Spore_load)) #look at just the monarchs with values for spore load
+response<-as.factor(mtemp.adult2$Wing_deformity_bin)
+
+m2_mixed<-gam(response ~ s(Temp, k=4) + s(logSpore_load) + Sex_f +s(Lin_f, Temp, bs="re"),  data=mtemp.adult2, method = "REML", family=binomial)
+
+summary(m2_mixed) #temperature-deformity relationship is not different based on inoculation status
+gam.check(m2_mixed)
+
+##############################
+
+deformitytable<-mtemp.adult1 %>% 
+  group_by(Temp) %>% 
+  dplyr::summarise(prop_deform = sum(as.numeric(Wing_deformity_bin), na.rm=T)/n(),
+            seprop_deform = sqrt(prop_deform*(1-prop_deform)/n()),
+            n = n())
+#PLOT
+#add itsadug - need to put all lines into the console
+plot.new()
+plot_smooth(m3_mixed, view = "Temp", cond = list(infection_OF = 0), rm.ranef = TRUE, transform = plogis, col="gray30", lwd=2, rug = TRUE, ylab=("Probability of wing deformity"), xlab=("Temperature (°C)"), ylim =c(0.0, 0.8), xlim = c(18,34), hide.label = TRUE)
+plot_smooth(m3_mixed, view = "Temp", cond = list(infection_OF = 1), rm.ranef = TRUE, transform = plogis, add=TRUE, col="darkorange1", lwd=2, rug = TRUE, ylab=("Probability of wing deformity"), xlab=("Temperature (°C)"), ylim =c(0.0, 0.8), xlim = c(18,30), hide.label = TRUE)
+axis(1, at=c(15,35), labels=FALSE, lwd.ticks=0)
+
+#* Sex_f : factor; set to the value(s): F. 
+
+#add itsadug - need to put all lines into the console
+plot.new()
+plot_smooth(m2_mixed, view = "logSpore_load", rm.ranef = TRUE, transform = plogis, col="skyblue2", lwd=2, rug = TRUE, xlim = c(4.5,6.8), ylab=("Probability of wing deformity"), xlab=("Parasite load (log10(spores/monarch))"), hide.label = TRUE)
+# 
+# * Sex_f : factor; set to the value(s): F. 
+# 	* Temp : numeric predictor; set to the value(s): 26. 
+
+```
+
+##Development time
+```{r}
+mtemp.adult$infection_f<-as.factor(mtemp.adult$Infection_status)
+response<-log10(mtemp.adult$Dev_adult)
+
+#spore load n=175
+mtemp.adult2<-filter(mtemp.adult, !is.na(Spore_load))
+mtemp.adult2$intensity4<-log10(mtemp.adult2$Spore_load+1)#intensity for the 4 lower temps (others NA)
+
+response<-log10(mtemp.adult2$Dev_adult)
+m2_mixed<-gam(response ~ s(Temp, k=4) + s(intensity4) + Sex_f + s(Lin_f,Temp, bs="re"), data=mtemp.adult2, method = "REML") #no effect of spore load
+
+gam.check(m2_mixed)
+summary(m2_mixed)
+
+#PLOT
+#add itsadug points- need to put all lines into the console
+#spore load predictor
+plot.new()
+plot_smooth(m2_mixed, view = "intensity4",  rm.ranef = TRUE, lwd=2, rug = TRUE, ylab=("Development time (log10(days))"), xlab=("log spore load"), hide.label = TRUE)
+axis(1, at=c(15,35), labels=FALSE, lwd.ticks=0)
+#axis(1, at=seq(18 , 34, by=4), lwd=0, lwd.ticks=1)
+
+
+#Infection
+#make infection status an ordered factor to tell difference between intercept adjustment and dif trend over temp for control vs. infected
+mtemp.adult$infection_OF<-as.ordered(mtemp.adult$infection_f)
+# change contrast to treatment coding (difference curves)
+contrasts(mtemp.adult$infection_OF) <- 'contr.treatment'
+# Inspect contrasts:
+contrasts(mtemp.adult$infection_OF)
+
+response<-log10(mtemp.adult$Dev_adult)
+
+m3_mixed<-gam(response ~ s(Temp,k=5) + s(Temp, k=5, by=infection_OF) + infection_OF + Sex_f + s(Lin_f,Temp, bs="re"), data=mtemp.adult, method = "REML")
+
+summary(m3_mixed)
+gam.check(m3_mixed)
+
+#PLOT
+plot.new()
+plot_data(m3_mixed, view = "Temp", split_by = "infection_OF", input="data", rm.ranef = TRUE, alpha=0.7, col=c("gray30", "darkorange1"), ylab=("Development time (log10(days))"), xlab=("Temperature (°C)"), hide.label = TRUE)
+plot_smooth(m3_mixed, view = "Temp", cond = list(infection_OF = 0), rm.ranef = TRUE, add=TRUE, col="gray30", lwd=2, ylab=("Development time (log10(days))"), xlab=("Temperature (°C)"), xlim = c(18,34), hide.label = TRUE)
+plot_smooth(m3_mixed, view = "Temp", cond = list(infection_OF = 1), rm.ranef = TRUE, add=TRUE, col="darkorange1", lwd=2, ylab=("Development time (log10(days))"), xlab=("Temperature (°C)"), xlim = c(18,30), hide.label = TRUE)
+axis(1, at=c(15,35), labels=FALSE, lwd.ticks=0)
+
+# * Sex_f : factor; set to the value(s): F. 
+
+```
+
+##Survival
+```{r}
+#whole dataset
+mtemp.surv<-completeFun(mtemp.comp, "Surv_adult")
+mtemp.surv$inf_status<-as.numeric(mtemp.surv$Infection_status)
+mtemp.surv$logSpore_load2<-log10(mtemp.surv$Spore_load2+1)
+
+#make infection status an ordered factor to tell difference between intercept adjustment and dif trend over temp for control vs. infected
+mtemp.surv$inoc_OF<-as.ordered(mtemp.surv$inoc_f)
+# change contrast to treatment coding (difference curves)
+contrasts(mtemp.surv$inoc_OF) <- 'contr.treatment'
+# Inspect contrasts:
+contrasts(mtemp.surv$inoc_OF)
+
+
+response<-mtemp.surv$Surv_adult
+
+m1_mixed<-gam(response ~ s(Temp, k=5) + s(Temp, k=5, by=inoc_OF) + inoc_OF + s(Lin_f, bs="re"), data=mtemp.surv, method = "REML", family=binomial) #Temp and lineage still important; inoc status*temperature not significant
+
+gam.check(m1_mixed)
+summary(m1_mixed)
+
+
+data_probsurv <-  
+  mtemp.comp %>% 
+  drop_na(Surv_adult) %>%   
+  group_by(inoc_status) %>% 
+  dplyr::summarise(propsurv = sum(as.numeric(Surv_adult), na.rm=T)/n(),
+            sepropsurv = sqrt(propsurv*(1-propsurv)/n()),
+            n = n())
+
+#########################################
+plot.new()
+plot_smooth(m1_mixed, view = "Temp", plot_all = "inoc_OF", rm.ranef = TRUE, transform = plogis, col=c("gray30", "darkorange1"), lwd=2, rug = TRUE, ylab=("Survival probability"), xlab=("Temperature (°C)"), hide.label = TRUE)
+axis(1, at=c(15,35), labels=FALSE, lwd.ticks=0)
+
+```
+
+##Wing area
+```{r}
+mtemp.adult1<-filter(mtemp.adult1, !is.na(Area))
+Bleed_stage_f<-as.factor(mtemp.adult1$Bleed_stage.x)
+#make infection status an ordered factor to tell difference between intercept adjustment and dif trend over temp for control vs. infected
+mtemp.adult1$infection_OF<-as.ordered(mtemp.adult1$infection_f)
+# change contrast to treatment coding (difference curves)
+contrasts(mtemp.adult1$infection_OF) <- 'contr.treatment'
+# Inspect contrasts:
+contrasts(mtemp.adult1$infection_OF)
+
+
+#spore load
+mtemp.adult3<-filter(mtemp.adult1, !is.na(Spore_load))
+response<-mtemp.adult3$Area
+
+m2_mixed<-gam(response ~ s(Temp, k=4) + s(logSpore_load) + Sex_f + Bleed_stage_f + s(Lin_f, Temp, bs="re"), data=mtemp.adult3, method = "REML") #no correlation between spore load and wing area
+
+gam.check(m2_mixed)
+summary(m2_mixed)
+
+##############################
+#infection status
+response<-mtemp.adult1$Area
+
+m3_mixed<-gam(response ~ s(Temp, k=5) + s(Temp, k=5, by=infection_OF) + infection_OF + Sex_f +  Bleed_stage_f + s(Lin_f,Temp, bs="re"), data=mtemp.adult1, method = "REML")
+
+summary(m3_mixed)
+gam.check(m3_mixed)
+
+plot.new()
+plot_data(m3_mixed, view = "Temp", split_by = "infection_OF", input="data", rm.ranef = TRUE, alpha=0.7, col=c("gray30", "darkorange1"), ylab=bquote("Wing area " (mm^2)), xlab=("Temperature (°C)"), hide.label = TRUE)
+plot_smooth(m3_mixed, view = "Temp", cond = list(infection_OF = 0), rm.ranef = TRUE, add=TRUE, col="gray30", lwd=2, ylab=bquote("Wing area " (mm^2)), xlab=("Temperature (°C)"), xlim = c(18,34), hide.label = TRUE)
+plot_smooth(m3_mixed, view = "Temp", cond = list(infection_OF = 1), rm.ranef = TRUE, add=TRUE, col="darkorange1", lwd=2, ylab=bquote("Wing area " (mm^2)), xlab=("Temperature (°C)"), xlim = c(18,30), hide.label = TRUE)
+axis(1, at=c(15,35), labels=FALSE, lwd.ticks=0)
+
+#* Sex_f : factor; set to the value(s): F. 
+#* Bleed_stage_f : factor; set to the value(s): Larva.
+##################
+
+plot.new()
+plot_smooth(m2_mixed, view = "logSpore_load", rm.ranef = TRUE, col=c("blue"), lwd=2, rug = TRUE, ylab=("Wing area (mm^2)"), xlab=("log10 spore load"), hide.label = TRUE)
+axis(1, at=c(15,35), labels=FALSE, lwd.ticks=0)
+
+################
+
+```
+
+##Adult longevity
+```{r}
+#make infection status an ordered factor to tell difference between intercept adjustment and dif trend over temp for control vs. infected
+mtemp.adult$infection_OF<-as.ordered(mtemp.adult$infection_f)
+# change contrast to treatment coding (difference curves)
+contrasts(mtemp.adult$infection_OF) <- 'contr.treatment'
+# Inspect contrasts:
+contrasts(mtemp.adult$infection_OF)
+
+longev_sum<-
+  mtemp.adult %>% 
+  group_by(Temp, inoc_status) %>% 
+  dplyr::summarise(avg_life = mean(Adult_longevity, na.rm=T))
+
+#Temp and temp*inoc interaction = sig; inoculated monarchs = consistently lower lifespan, but at 34C both 0 and 1 inoc have low longeveity even though none were infected
+
+#spore load - we already know this impacts longevity
+
+###########
+response<-(mtemp.adult$Adult_longevity)
+
+m3_mixed<-gam(response ~ s(Temp, k=5) + s(Temp, k=5, by=infection_OF) + infection_OF + Sex_f + s(Lin_f, Temp, bs="re"), data=mtemp.adult, method = "REML", family = 'nb', link='log')
+
+m4_mixed<-gam(response ~ s(Temp, k=5) + s(Temp, k=5, by=OE_f) + OE_f + Sex_f + s(Lin_f, Temp, bs="re"), data=mtemp.adult, method = "REML", family = 'nb', link='log')
+
+overdisp_fun(m3_mixed)
+summary(m3_mixed)
+gam.check(m3_mixed)
+
+plot.new()
+plot_data(m3_mixed, view = "Temp", split_by = "infection_OF", input="data", rm.ranef = TRUE, alpha=0.7, col=c("gray30", "darkorange1"), ylab=("Adult starvation resistance (longevity in days)"), xlab=("Temperature (°C)"), hide.label = TRUE)
+plot_smooth(m3_mixed, view = "Temp", cond = list(infection_OF = 0), transform = exp, add=TRUE, rm.ranef = TRUE, col="gray30", lwd=2, ylab=("Adult starvation resistance (longevity in days)"), xlab=("Temperature (°C)"), ylim=c(5,28), xlim = c(18,34), hide.label = TRUE)
+plot_smooth(m3_mixed, view = "Temp", cond = list(infection_OF = 1), transform = exp, rm.ranef = TRUE, add=TRUE, col="darkorange1", lwd=2, ylab=("Adult starvation resistance (longevity in days)"), xlab=("Temperature (°C)"), ylim=c(5,28), xlim = c(18,30), hide.label = TRUE)
+axis(1, at=c(15,35), labels=FALSE, lwd.ticks=0)
+
+plot.new()
+plot_smooth(m3_mixed, view = "Temp", cond = list(infection_OF = 0), transform = exp, rm.ranef = TRUE, col="gray30", lwd=2, ylab=("Adult starvation resistance (longevity in days)"), xlab=("Temperature (°C)"), ylim=c(5,22), xlim = c(18,34), hide.label = TRUE)
+plot_smooth(m3_mixed, view = "Temp", cond = list(infection_OF = 1), transform = exp, rm.ranef = TRUE, add=TRUE, col="darkorange1", lwd=2, ylab=("Adult starvation resistance (longevity in days)"), xlab=("Temperature (°C)"), ylim=c(5,22), xlim = c(18,30), hide.label = TRUE)
+axis(1, at=c(15,35), labels=FALSE, lwd.ticks=0)
+
+#* Sex_f : factor; set to the value(s): F. 
+###############
+
+```
+
+#spore load-longevity relationship
+GLM
+response = longevity
+explanatory = spore load*temperature interaction, sex, OE, lineage
+family = gaussian after sqrt transformation
+```{r}
+
+mtemp.adult4<-filter(mtemp.adult, !is.na(Sex_f) & !is.na(Spore_load2)& !is.na(Adult_longevity) & !is.na(Area))
+mtemp.adult4$Temp_f<-as.factor(mtemp.adult4$Temp)
+mtemp.adult4$srSpore_load2<-sqrt(mtemp.adult4$Spore_load2)
+mtemp.adult4$logSpore_load2<-log10(mtemp.adult4$Spore_load2+1)
+
+mtemp.adult4 <- within(mtemp.adult4, OE_f <- relevel(OE_f, ref = "E3")) #E3 ref instead of control
+
+#which to use - square root makes error distribution closest to normal
+response<-log10(mtemp.adult4$Adult_longevity)
+response<-sqrt(mtemp.adult4$Adult_longevity)
+
+hist(response)
+
+m0<-lm(response ~ 1, data = mtemp.adult4)
+m1<-lm(response ~ Temp*srSpore_load2, data = mtemp.adult4)
+m2<-lm(response ~ srSpore_load2*Temp + infection_f + Lineage + Sex + Area, data = mtemp.adult4)
+m3<-lm(response ~ Temp*srSpore_load2 + infection_f + Area, data = mtemp.adult4)
+m4<-lm(response ~ Temp*srSpore_load2 + srSpore_load2*OE_strain + Area, data = mtemp.adult4)
+m5<-lm(response ~ Temp + srSpore_load2 + infection_f, data = mtemp.adult4)
+
+
+AIC(m0,m1,m2,m3,m4,m5)#best model 
+
+#overdisp_fun
+#check best model
+plot(m3)
+summary(m3)
+tab_model(m3, transform = NULL, show.stat = TRUE, show.se = TRUE, show.ci = FALSE)
+anova(m3)
+
+
+cbPalette <- c("#999999", "#E69F00", "#56B4E9", "#009E73", "#F0E442", "#0072B2", "#D55E00", "#CC79A7") #color blind accessible palette
+
+p1<-ggplot(mtemp.adult4, aes(x = srSpore_load2, y = response, group = Temp_f, color = Temp_f, fill=Temp_f)) +
+  labs(x = "Infection intensity (sqrt(parasites/monarch))", y = "Adult starvation resistance (longevity sqrt(days))") +
+  geom_smooth(method = 'glm') +
+  geom_point(aes(color =Temp_f), alpha = .5)+
+  theme_classic()
+
+p1+
+  scale_color_manual(values=c("#56B4E9", "#009E73", "#E69F00",  "#D55E00", "#CC79A7"))+
+  scale_fill_manual(values =c("#56B4E9", "#009E73", "#E69F00",  "#D55E00", "#CC79A7"))+
+  guides(fill=guide_legend(title = "Temperature (°C)"),color=guide_legend(title = "Temperature (°C)"))
+
+
+#################################################################################
+p2<-ggplot(mtemp.adult4, aes(x = srSpore_load2, y = response, group = OE_strain, color = OE_strain, fill=OE_strain)) +
+  labs(x = "Infection intensity (sqrt(parasites/monarch))", y = "Adult starvation resistance (longevity sqrt(days))") +
+  geom_smooth(method = 'glm') +
+  geom_point(aes(color =OE_strain, shape = factor(Temp)), alpha = .5)+
+  theme_classic()
+p2
+
+
+###############################
+
+
+```
