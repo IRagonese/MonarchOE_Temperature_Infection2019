@@ -18,7 +18,7 @@ File: mtemp_comp_Nov1_2021.csv (comprehensive data for majority of analysis)
 "ID" = uniquie monarch identification number (1-450)               
 "Temp" = Temperature treamtment (18, 22, 26, 30, 34)            
 "Lineage" = One of three outbred host lineages (B, D, F)          
-"OE_strain" = Parasite treatment (control, E3-less virulent or E10-more virulent)       
+"OE_strain" = Parasite treatment (control, E3 or E10)       
 "Inoculation" = date fed inoculation leaf (all monarchs were inoculated outside of incubators - except for a few that took         multiple days to consume the leaf (mostly in the coldest treatments; only ~3 for 34C))    
 "Into_pint" = date put into an individual pint within the incubator       
 "Bleed_stage.x" = assigned stage to be sampled for hemolymph (None, Larva, Pupa) (from master datasheet)  
